@@ -1,4 +1,9 @@
 import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.patches import Ellipse
+from scipy.stats import multivariate_normal
+from matplotlib import cm
+
 
 class RLS:
     def __init__(self, order, noise, lam=0.99, delta=1e-2):
@@ -21,7 +26,7 @@ class RLS:
 
     def predict(self, x):
         # x is the input vector
-        x = x.reshape(-1, 1)
+        #x = x.reshape(-1, 1)
         return x.T @ self.w
     
 def rls_predict_and_train(model, x, steps=5, cov = None):
@@ -41,6 +46,18 @@ def rls_predict_and_train(model, x, steps=5, cov = None):
 
     return np.array(preds)
 
+def generate_force_samples(n_samples=1000, mu_fx=0, mu_fy=0, sigma_fx=1, sigma_fy=1, rho=0.5):
+    mean = [mu_fx, mu_fy]
+    cov = [
+        [sigma_fx**2, rho * sigma_fx * sigma_fy],
+        [rho * sigma_fx * sigma_fy, sigma_fy**2]
+    ]
+
+    samples = np.random.multivariate_normal(mean, cov, n_samples)
+    Fx_samples, Fy_samples = samples[:, 0], samples[:, 1]
+
+    return Fx_samples, Fy_samples
+
 def covariance(Fx_samples, Fy_samples, xdot, ydot, m=1.0, Ts=0.1, theta_std=0.05):
     n = len(Fx_samples)
     data = np.zeros((n, 3))  # columnas: x, y, theta
@@ -57,17 +74,31 @@ def covariance(Fx_samples, Fy_samples, xdot, ydot, m=1.0, Ts=0.1, theta_std=0.05
         data[i] = [x, y, theta]
 
     return np.cov(data.T)
-
-def generate_force_samples(n_samples=1000, mu_fx=0, mu_fy=0, sigma_fx=1, sigma_fy=1, rho=0.5):
-    mean = [mu_fx, mu_fy]
-    cov = [
-        [sigma_fx**2, rho * sigma_fx * sigma_fy],
-        [rho * sigma_fx * sigma_fy, sigma_fy**2]
-    ]
-
-    samples = np.random.multivariate_normal(mean, cov, n_samples)
-    Fx_samples, Fy_samples = samples[:, 0], samples[:, 1]
-
-    return Fx_samples, Fy_samples
-
+            
 # Inicio de datos
+
+import pandas as pd
+
+def load_trajectory_data(filepath):
+    """
+    Loads trajectory data from a text file, computes theta, and returns a dataset with x, y, and theta.
+
+    Parameters:
+        filepath (str): Path to the trajectory data file.
+
+    Returns:
+        np.ndarray: Dataset with columns [x, y, theta].
+    """
+    
+    # Load the data using pandas
+    data = pd.read_csv(filepath, sep=r"\s+", skiprows=1, names=["X", "Y", "Z"])
+
+    # Compute theta as the angle of movement (arctan of y/x)
+    data["theta"] = np.arctan2(data["Y"].diff(), data["X"].diff()).fillna(0)
+
+    # Return only X, Y, and theta as a NumPy array
+    return data
+
+
+
+
