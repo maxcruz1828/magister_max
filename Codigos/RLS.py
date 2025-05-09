@@ -31,7 +31,11 @@ def rls_predict_and_train(model, x, cov=None, steps=5):
     current_x = x.copy()  
 
     for _ in range(steps):
-        y_pred = model.predict(current_x)  
+        y_pred = model.predict(current_x)
+        if cov is not None:
+            # Generar ruido gaussiano multivariado
+            y_pred += np.random.multivariate_normal([0,0,0], cov)
+
         preds.append(y_pred)
 
         model.update(current_x, y_pred)
@@ -42,8 +46,6 @@ def rls_predict_and_train(model, x, cov=None, steps=5):
         current_x[0, -3:] = new_state
 
     return np.array(preds)
-
-'''
 
 def generate_force_samples(n_samples=1000, mu_fx=0, mu_fy=0, sigma_fx=1, sigma_fy=1, rho=0.5):
     mean = [mu_fx, mu_fy]
@@ -74,8 +76,6 @@ def covariance(Fx_samples, Fy_samples, xdot, ydot, m=1.0, Ts=0.1):
 
     return np.cov(data.T)
 
-'''
-
 # Inicio del programa
 
 def load_trajectory_data(filepath):
@@ -86,31 +86,31 @@ def load_trajectory_data(filepath):
     return data
 
 traj = load_trajectory_data("trayectorias_data/DroneFlightData/WithoutTakeoff/2020-0612/01/0612_2020_113939_01.csv")
-
 traj['time_delta'] = pd.to_timedelta(traj['time'])
 traj['segundos'] = traj['time_delta'].dt.total_seconds()
 traj['segundos'] = traj['segundos'] - traj['segundos'].min()
+Traj = traj[['segundos', 'x_gyro', 'y_gyro', 'yaw', 'lat', 'lon', 'alt']].dropna()
 
-# Extract the relevant columns
-Traj = traj[['segundos', 'x_gyro', 'y_gyro', 'yaw', 'lat', 'lon', 'alt']]
-
-Traj = Traj.dropna()
-
-# Obtener valores base (primer punto)
-lat0 = Traj.iloc[0]['lat']
-lon0 = Traj.iloc[0]['lon']
-yaw0 = Traj.iloc[0]['yaw']
+lat0, lon0, yaw0 = Traj.iloc[0][['lat', 'lon', 'yaw']]
+lat_scale = 111_320  # metros por grado latitud
+lon_scale = 111_320 * np.cos(np.radians(lat0))  # metros por grado longitud
 
 # Funciones para normalizar y desnormalizar
 def normalize_state(lat, lon, yaw):
-    return [lat - lat0, lon - lon0, yaw - yaw0]
+    lat_m = (lat - lat0) * lat_scale
+    lon_m = (lon - lon0) * lon_scale
+    yaw_norm = (yaw - yaw0) / 180.0
+    return [lat_m, lon_m, yaw_norm]
 
-def denormalize_state(lat_n, lon_n, yaw_n):
-    return [lat_n + lat0, lon_n + lon0, yaw_n + yaw0]
+def denormalize_state(lat_m, lon_m, yaw_norm):
+    lat = lat0 + lat_m / lat_scale
+    lon = lon0 + lon_m / lon_scale
+    yaw = yaw0 + yaw_norm * 180.0
+    return [lat, lon, yaw]
 
 # Time
 T = len(Traj)
-view = 4  # Tamaño de la ventana de entrenamiento
+view = 5  # Tamaño de la ventana de entrenamiento
 
 all_preds = []
 
@@ -122,51 +122,42 @@ for t in range(view + 1, T - 1):
     # Entrenar con múltiples ejemplos reales antes del paso t
     for j in range(t - view, t):
         history = [
-            normalize_state(
-                Traj.iloc[i]['lat'],
-                Traj.iloc[i]['lon'],
-                Traj.iloc[i]['yaw']
-            )
+            normalize_state(Traj.iloc[i]['lat'], Traj.iloc[i]['lon'], Traj.iloc[i]['yaw'])
             for i in range(j - view, j)
         ]
         Xj = np.array(history).flatten().reshape(1, -1)
-
         Yj = np.array(normalize_state(
-            Traj.iloc[j]['lat'],
-            Traj.iloc[j]['lon'],
-            Traj.iloc[j]['yaw']
+            Traj.iloc[j]['lat'], Traj.iloc[j]['lon'], Traj.iloc[j]['yaw']
         )).reshape(1, -1)
-
         model.update(Xj, Yj)
 
     # Predecir 5 pasos futuros de forma autoregresiva
     x_input = np.array([
-        normalize_state(
-            Traj.iloc[i]['lat'],
-            Traj.iloc[i]['lon'],
-            Traj.iloc[i]['yaw']
-        )
+        normalize_state(Traj.iloc[i]['lat'], Traj.iloc[i]['lon'], Traj.iloc[i]['yaw'])
         for i in range(t - view, t)
     ]).flatten().reshape(1, -1)
 
-    preds = rls_predict_and_train(model, x_input, steps=3)
+    '''
+
+    # Generar muestras de fuerza
+    Fx_samples, Fy_samples = generate_force_samples(n_samples=1000, mu_fx=30, mu_fy=30, sigma_fx=0.1, sigma_fy=0.1, rho=0.5)
+
+    # Calcular la covarianza
+    Ts = Traj.iloc[t]['segundos'] - Traj.iloc[t - 1]['segundos']
+
+    xdot = (Traj.iloc[t]['lat'] - Traj.iloc[t - 1]['lat'])/Ts
+    ydot = Traj.iloc[t]['lon'] - Traj.iloc[t - 1]['lon']/Ts
+
+    cov = covariance(Fx_samples, Fy_samples, xdot, ydot, m = 3, Ts = Ts)
+    '''
+
+    preds = rls_predict_and_train(model, x_input, cov = None, steps=3)
 
     # Guardar predicciones
-    preds_denorm = np.array([
-        denormalize_state(*p.flatten()) for p in preds
-    ])
+    preds_denorm = np.array([denormalize_state(*p.flatten()) for p in preds])
     all_preds.append(preds_denorm)
 
 # Preparación de la gráfica
-
-# Limitar el gráfico a los valores reales
-all_lat = Traj['lat'].values
-all_lon = Traj['lon'].values
-
-lat_min = min(all_lat)
-lat_max = max(all_lat)
-lon_min = min(all_lon)
-lon_max = max(all_lon)
 
 from matplotlib.animation import FuncAnimation
 
@@ -192,15 +183,11 @@ ax.set_ylabel("Latitud")
 ax.legend()
 ax.set_title("Trayectoria real vs 5 predicciones actuales")
 
-# Función de actualización
 def actualizacion(frame):
-    # Mostrar trayectoria real hasta el frame actual
-    real_line.set_data(traj_real[:frame + 1, 1], traj_real[:frame + 1, 0])  # lon, lat
-
-    # Mostrar solo las 5 predicciones hechas en ese frame
+    real_index = frame + view + 1
+    real_line.set_data(traj_real[:real_index, 1], traj_real[:real_index, 0])
     preds = all_preds_array[frame]
-    pred_line.set_data(preds[:, 1], preds[:, 0])  # lon, lat
-
+    pred_line.set_data(preds[:, 1], preds[:, 0])
     return real_line, pred_line
 
 ani = FuncAnimation(fig, actualizacion, frames=len(all_preds_array), interval=400, blit=False)
